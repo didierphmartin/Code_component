@@ -1,0 +1,27 @@
+{
+  "name": "SharePoint: move",
+  "description": "Stores the input's files in the folder argument, then releases the source (e.g. moves the email out of the drop folder).",
+  "code": "code.py",
+  "exits": [
+    "moved",
+    "error"
+  ],
+  "mcp_servers": [
+    "SharePoint",
+    "Outlook"
+  ],
+  "timeout_s": 300,
+  "args": [
+    {
+      "name": "folder",
+      "required": true,
+      "description": "SharePoint folder the files go to"
+    },
+    {
+      "name": "subfolder",
+      "default": "{received} - {from} - {subject}",
+      "description": "One subfolder per item, inside folder"
+    }
+  ],
+  "provides": []
+}
