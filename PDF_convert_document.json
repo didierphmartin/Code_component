@@ -1,0 +1,14 @@
+{
+  "id": 12,
+  "name": "PDF: convert document",
+  "description": "Converts the document of a {document, attachments} package to PDF; attachments keep their format.",
+  "code": "# Document -> PDF. Input: a document package {document, attachments, ...} (e.g. from \"Mail dropped in a folder\").\n# Converts the document to PDF and leaves the attachments as they are; everything else passes through untouched.\n# Output: the package with `files` -- the PDF first, then the attachments -- each a {name, from} reference that\n# the storing node fetches at upload time (or {name, base64} for content carried inline).\n# A document converts through its own pdf rendition (renditions.pdf, a tool call), or is already a PDF file.\nimport json\n\n\ndef _pdf_name(document):\n    name = str(document.get(\"name\") or \"Document\").strip() or \"Document\"\n    return name if name.lower().endswith(\".pdf\") else name + \".pdf\"\n\n\ndef run(input, call_tool):\n    pkg = input\n    if isinstance(pkg, str):\n        try:\n            pkg = json.loads(pkg)\n        except ValueError:\n            pkg = None\n    doc = pkg.get(\"document\") if isinstance(pkg, dict) else None\n    if not isinstance(doc, dict):\n        return {\"route\": \"error\", \"output\": {\"reason\": \"no document in the input: expected {document, attachments}\",\n                                             \"source\": pkg.get(\"source\") if isinstance(pkg, dict) else None}}\n    rendition = (doc.get(\"renditions\") or {}).get(\"pdf\")\n    if isinstance(rendition, dict) and rendition.get(\"server\") and rendition.get(\"tool\"):\n        pdf = {\"name\": _pdf_name(doc), \"from\": rendition}\n    elif (doc.get(\"content_type\") or \"\").lower() == \"application/pdf\" and (doc.get(\"from\") or doc.get(\"base64\")):\n        pdf = {k: doc[k] for k in (\"from\", \"base64\") if doc.get(k) is not None} | {\"name\": _pdf_name(doc)}\n    else:\n        return {\"route\": \"error\", \"output\": {\n            \"reason\": f\"cannot convert a {doc.get('kind') or doc.get('content_type') or 'document'} to PDF: \"\n                      \"it has no pdf rendition\", \"source\": pkg.get(\"source\")}}\n    attachments = [a for a in pkg.get(\"attachments\") or [] if isinstance(a, dict)]\n    files = [pdf] + [{k: a[k] for k in (\"name\", \"from\", \"base64\") if a.get(k) is not None} for a in attachments]\n    return {\"route\": \"converted\", \"output\": {**pkg, \"files\": files}}\n",
+  "exits": [
+    "converted",
+    "error"
+  ],
+  "mcp_servers": [],
+  "timeout_s": 30,
+  "args": [],
+  "provides": []
+}

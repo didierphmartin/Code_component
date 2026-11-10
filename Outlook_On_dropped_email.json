@@ -1,0 +1,69 @@
+{
+  "id": 8,
+  "name": "Outlook: On dropped email",
+  "description": "Takes the next email dragged into the Start folder and hands on {document, attachments, source}; the email stays there until a later node releases it.",
+  "code": "# Mail dropped in a folder (a Start option). Start args: folder (the drop folder), done_folder (where the email\n# goes once a later node has finished with it). Takes the next email dragged into the folder and packages it as\n# a document with its attachments:\n#   document     the email: its metadata, body text, and how to render it as a PDF (a tool call)\n#   attachments  the files attached to it, each with how to fetch it in its original format (a tool call);\n#                pictures inside the body are not attachments here (the rendered email has them)\n#   source       where it came from, and `release`: the tool call that takes it out of the drop folder, made by\n#                the node that finishes the job. Until then the email stays and is handed on again after its\n#                10-minute lease (up to 3 attempts).\n# On an organization connection the email also carries `mailbox` / `mailbox_name` (the VIP whose mailbox it came\n# from); they are copied into document.meta and source under the same names, and absent otherwise.\n# It also provides `meta` (handed on to the next nodes, whose arguments may use these as {placeholders}):\n#   mailbox, mailbox_name (only when the mail has them), from (\"unknown sender\" when empty), subject (first 60\n#   characters, \"(no subject)\" when empty), received_at (as given), received (\"YYYY-MM-DD HHMM\" in the run\n#   machine's local time; omitted when the mail has no received_at).\n# File content is never in the package: each part says how to fetch it, so run records stay small.\nfrom datetime import datetime\n\ndef _attachment(mail_id, att):\n    return {\"name\": att.get(\"name\") or \"attachment\", \"content_type\": att.get(\"content_type\") or \"\",\n            \"size\": att.get(\"size\"), \"from\": {\"server\": \"outlook\", \"tool\": \"get_attachment\",\n                                              \"args\": {\"mail_id\": mail_id, \"attachment_id\": att[\"id\"], \"raw\": True}}}\n\n\ndef _local(received_at):\n    \"\"\"ISO time (Graph gives UTC, \"...Z\") as YYYY-MM-DD HHMM in local time; unparsable: its first 16 characters.\"\"\"\n    try:\n        return datetime.fromisoformat(received_at.replace(\"Z\", \"+00:00\")).astimezone().strftime(\"%Y-%m-%d %H%M\")\n    except ValueError:\n        return received_at[:16].replace(\"T\", \" \").replace(\":\", \"\")\n\n\ndef run(input, call_tool):\n    folder = str(ARGS.get(\"folder\") or \"\").strip() or \"Drop\"\n    done = str(ARGS.get(\"done_folder\") or \"\").strip() or \"Filed\"\n    if done.strip(\" /\").lower() == folder.strip(\" /\").lower():\n        return {\"route\": \"error\", \"output\": {\n            \"reason\": f\"done_folder must not be the drop folder ({folder}): the email would never leave it\"}}\n    try:\n        mail = call_tool(\"outlook\", \"poll_new_mail\", {\"folder\": folder, \"mode\": \"drop\"}).get(\"mail\")\n    except Exception as e:  # ToolError from call_tool (the harness class is not importable here)\n        return {\"route\": \"error\", \"output\": {\"reason\": str(e)}}\n    if not mail:\n        return {\"route\": \"no_mail\", \"output\": None}\n    mail_id, attachments, cloud = mail[\"id\"], [], []\n    for att in mail.get(\"attachments\") or []:\n        if att.get(\"kind\") == \"reference\":                 # a cloud link: no content to fetch (the email lists it)\n            cloud.append(att.get(\"name\") or \"\")\n        elif not (att.get(\"is_inline\") and (att.get(\"content_type\") or \"\").lower().startswith(\"image/\")):\n            attachments.append(_attachment(mail_id, att))\n    document = {\n        \"kind\": \"email\", \"name\": \"Email\",\n        \"meta\": {k: mail.get(k) for k in (\"from\", \"to\", \"cc\", \"subject\", \"received_at\", \"web_link\")},\n        \"text\": mail.get(\"body_text\") or \"\",\n        \"renditions\": {\"pdf\": {\"server\": \"outlook\", \"tool\": \"mail_to_pdf\", \"args\": {\"mail_id\": mail_id}}},\n    }\n    for k in (\"mailbox\", \"mailbox_name\"):\n        if mail.get(k):\n            document[\"meta\"][k] = mail[k]\n    source = {\"server\": \"outlook\", \"id\": mail_id, \"folder\": folder, \"attempt\": mail.get(\"attempt\"),\n              \"release\": {\"server\": \"outlook\", \"tool\": \"move_mail\", \"args\": {\"mail_id\": mail_id, \"folder\": done}}}\n    source.update({k: mail[k] for k in (\"mailbox\", \"mailbox_name\") if mail.get(k)})\n    meta = {k: mail[k] for k in (\"mailbox\", \"mailbox_name\") if mail.get(k)}\n    meta[\"from\"] = mail.get(\"from\") or \"unknown sender\"\n    meta[\"subject\"] = (mail.get(\"subject\") or \"\").strip()[:60] or \"(no subject)\"\n    received_at = mail.get(\"received_at\") or \"\"\n    if received_at:\n        meta[\"received_at\"] = received_at\n        meta[\"received\"] = _local(received_at)\n    return {\"route\": \"dropped_mail\", \"output\": {\"document\": document, \"attachments\": attachments,\n                                       \"not_fetched\": cloud, \"source\": source, \"meta\": meta}}\n",
+  "exits": [
+    "dropped_mail",
+    "no_mail",
+    "error"
+  ],
+  "mcp_servers": [
+    "Outlook"
+  ],
+  "timeout_s": 60,
+  "args": [
+    {
+      "name": "folder",
+      "default": "Drop",
+      "description": "Outlook folder the emails are dragged into"
+    },
+    {
+      "name": "done_folder",
+      "default": "Filed",
+      "description": "Folder the email moves to once a later node has finished with it"
+    }
+  ],
+  "provides": [
+    {
+      "name": "mailbox",
+      "description": "The mailbox address (organization connection only)"
+    },
+    {
+      "name": "mailbox_name",
+      "description": "The mailbox's display name, safe as a folder name (organization connection only)"
+    },
+    {
+      "name": "from",
+      "description": "Sender"
+    },
+    {
+      "name": "subject",
+      "description": "Subject (first 60 characters)"
+    },
+    {
+      "name": "received_at",
+      "description": "Date and time received (ISO)"
+    },
+    {
+      "name": "received",
+      "description": "Date and time received, YYYY-MM-DD HHMM"
+    }
+  ],
+  "start_trigger": {
+    "label": "Outlook: On droped email",
+    "watch": {
+      "server": "Outlook",
+      "tool": "wait_for_new",
+      "args": {
+        "poll": "poll_new_mail",
+        "mode": "drop",
+        "folder": "Drop"
+      }
+    },
+    "work_exit": "dropped_mail",
+    "pass_args": [
+      "folder"
+    ]
+  }
+}

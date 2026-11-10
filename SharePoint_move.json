@@ -1,0 +1,28 @@
+{
+  "id": 13,
+  "name": "SharePoint: move",
+  "description": "Stores the input's files in the folder argument, then releases the source (e.g. moves the email out of the drop folder).",
+  "code": "# SharePoint -- move. Moves what it receives into a SharePoint folder: the input is the function's source, the\n# node's folder argument its destination.\n# Input: {files, source?, document?, ...}. Each file is {\"name\", \"base64\"} or {\"name\", \"from\": {\"server\", \"tool\",\n# \"args\"}} -- a tool call whose result has base64, made just before the upload (tick that server on the node).\n# Arguments arrive filled (any {placeholder} already replaced from the previous nodes' meta, defaults applied):\n# nothing here handles placeholders.\n# 1. stores the files in folder/<subfolder> (the subfolder argument; empty = straight in folder);\n# 2. then runs source.release when there is one (e.g. the email leaves the Outlook drop folder) -- only after\n#    every file is stored, so a failure leaves the source where it was, to be handed on again.\n# Exits: ok {status, folder, files, web_urls, released}; no {status, reason}.\nimport json\n\n\ndef _error(reason, released=False):\n    return {\"route\": \"error\", \"output\": {\"status\": \"error\", \"reason\": str(reason), \"released\": released}}\n\n\ndef _content(call_tool, f):\n    if f.get(\"base64\") is not None:\n        return f[\"base64\"]\n    ref = f.get(\"from\")\n    if not isinstance(ref, dict) or not ref.get(\"server\") or not ref.get(\"tool\"):\n        raise ValueError(f\"file {f.get('name')!r} has neither base64 nor a from tool call\")\n    got = call_tool(ref[\"server\"], ref[\"tool\"], ref.get(\"args\") or {})\n    if not isinstance(got, dict) or got.get(\"base64\") is None:\n        raise ValueError(f\"{ref['server']}.{ref['tool']} returned no base64 for {f.get('name')!r}\")\n    return got[\"base64\"]\n\n\ndef run(input, call_tool):\n    pkg = input\n    if isinstance(pkg, str):\n        try:\n            pkg = json.loads(pkg)\n        except ValueError:\n            pkg = None\n    if not isinstance(pkg, dict) or not isinstance(pkg.get(\"files\"), list) or not pkg[\"files\"]:\n        return _error(\"no files in the input: expected {files: [...]}\")\n    destination = str(ARGS.get(\"folder\") or \"\").strip()\n    if not destination:\n        return _error(\"set folder in this node's arguments (the SharePoint destination)\")\n    name = str(ARGS.get(\"subfolder\") or \"\").strip()\n    try:\n        folder = call_tool(\"sharepoint\", \"ensure_folder\", {\"path\": destination})[\"path\"]\n        if name:\n            folder = call_tool(\"sharepoint\", \"create_subfolder\", {\"parent\": folder, \"name\": name})[\"path\"]\n        stored, urls = [], []\n        for f in pkg[\"files\"]:\n            up = call_tool(\"sharepoint\", \"upload_file\",\n                           {\"folder\": folder, \"name\": f.get(\"name\") or \"file\", \"base64\": _content(call_tool, f)})\n            stored.append(up[\"path\"].rsplit(\"/\", 1)[-1])   # the stored name: SharePoint renames on a clash\n            urls.append(up.get(\"web_url\") or \"\")\n    except Exception as e:  # ToolError from call_tool (the harness class is not importable here), or a bad file\n        return _error(e)\n    release = (pkg.get(\"source\") or {}).get(\"release\") if isinstance(pkg.get(\"source\"), dict) else None\n    if isinstance(release, dict) and release.get(\"server\") and release.get(\"tool\"):\n        try:\n            call_tool(release[\"server\"], release[\"tool\"], release.get(\"args\") or {})\n        except Exception as e:\n            # Stored but not released: the source is handed on again and stored a second time.\n            return _error(f\"files stored in {folder}, but the source was not released: {e}\")\n    return {\"route\": \"moved\", \"output\": {\"status\": \"moved\", \"folder\": folder, \"files\": stored, \"web_urls\": urls,\n                                      \"released\": bool(release)}}\n",
+  "exits": [
+    "moved",
+    "error"
+  ],
+  "mcp_servers": [
+    "SharePoint",
+    "Outlook"
+  ],
+  "timeout_s": 300,
+  "args": [
+    {
+      "name": "folder",
+      "required": true,
+      "description": "SharePoint folder the files go to"
+    },
+    {
+      "name": "subfolder",
+      "default": "{received} - {from} - {subject}",
+      "description": "One subfolder per item, inside folder"
+    }
+  ],
+  "provides": []
+}
